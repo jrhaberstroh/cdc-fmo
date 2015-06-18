@@ -2,6 +2,8 @@
 set -o nounset
 set -o errexit
 
+errecho () { echo "WARNING: $@" 1>&2; }
+errcat () { echo "WARNING: " 1>&2; cat $@ 1>&2; }
 
 TOP=$1
 QOP=$2
@@ -10,9 +12,9 @@ TEMPBASE=$SRCDIR/temp/mol
 
 # Separate each molecule type into a separate text file with
 #   comments and section headers removed
-echo "Splitting molecule types from preprocessed topology..."
+errecho "Splitting molecule types from preprocessed topology..."
 molecules=$(cat $TOP | grep -n moleculetype | cut -d':' -f 1)
-echo $molecules
+errecho $molecules
 molnum=1
 for molline in $molecules; do
     temp_file=$TEMPBASE-temp_$molnum.qop
@@ -21,7 +23,7 @@ for molline in $molecules; do
     catch_lines=$(cat $temp_file | grep -n -e '\[' | cut -d':' -f 1)
     catch_num=$(echo $catch_lines | wc -w)
     if [ $catch_num -le 2 ]; then
-        echo "Last molecule is monatomic, update top2qop to allow this..."
+        errecho "Last molecule is monatomic, update top2qop to allow this..."
         exit 104
     else
         mol_head=`echo $catch_lines | cut -d ' ' -f1`
@@ -39,9 +41,9 @@ done
 
 let molnum--
 cat $TOP | sed '1,/molecules/d' | grep '^ *[a-zA-Z]' > $TEMPBASE-all.txt
-cat $TEMPBASE-all.txt
+errcat $TEMPBASE-all.txt
 
-echo NUMBER OF FILES: $molnum
+errecho NUMBER OF FILES: $molnum
 moltypes=''
 for i in `seq 1 $molnum`; do
     moltypes="$moltypes $TEMPBASE-$i.qop"

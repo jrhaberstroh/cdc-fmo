@@ -1,21 +1,27 @@
 import numpy as np
 import numpy.linalg as LA
+import scipy.sparse
 import pandas as pd
 import matplotlib as plt
 import subprocess
 import argparse
+import logging
 
 def main():
+
     parser = argparse.ArgumentParser()
     parser.add_argument('-groframe', required=True)
     parser.add_argument('-qtop', required=True)
     parser.add_argument('-qcdc', required=True)
     parser.add_argument('-cdc_molname', type=str, default='BCL')
     parser.add_argument('-cdc_molnum', type=int, default=7)
+    parser.add_argument('-debug', action='store_true')
     args = parser.parse_args()
     fname_trj=args.groframe
     fname_top=args.qtop
     fname_cdc=args.qcdc
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
 
     N_framelines = 0
     str_box      = ""
@@ -36,13 +42,12 @@ def main():
     h    = box_tensor
     hinv = LA.inv(box_tensor)
 
-    arr_coords = np.genfromtxt(fname_trj, delimiter=(8, 7, 5, 8, 8, 8),
-            usecols=(3, 4, 5), skip_header = 2, skip_footer = 1)
-
     # Build the topology
     top_table = pd.read_table(fname_top, delim_whitespace=True, 
-            keep_default_na = None, usecols=(3, 4, 6,), 
-            header=None, names=('mol','atm','q'))
+            keep_default_na = None, usecols=(0, 2, 3, 4, 6,), 
+            header=None, names=('atmid', 'resid', 'mol','atm','q'))
+
+    # Locate the CDC molecules in the topology table
     cdc_atomind = top_table.atm[top_table.mol==args.cdc_molname].index.tolist()
     cdc_numatoms = len(cdc_atomind)
     cdc_numatompmol = cdc_numatoms / args.cdc_molnum
@@ -50,6 +55,77 @@ def main():
         raise ValueError("cdc_molnum ({}) does not divide into the number "
                 "of atoms with molecule type cdc_molname ({}:{})".format(
                 args.cdc_molnum, args.cdc_molname, cdc_numatoms))
+    # Read the CDC table
+    cdc_q = pd.read_table(fname_cdc, delim_whitespace=True, header=None, 
+            names=('atm', 'qta', 'q0a', 'q1a', 'qtb', 'q0b', 'q1b'),
+            keep_default_na = None)
+
+    # Find index boundaries for all non-solvent regions
+    nonsolvent_sel = (top_table.mol != "SOL") & (top_table.mol != "NA")
+    nonsolvent = top_table[nonsolvent_sel]
+    boundary = np.zeros(len(nonsolvent), dtype=np.bool)
+    # Do not denote a boundary at index 0 (even though there sorta is one)
+    #   because of the method of populating the env_group_mtx
+    boundary[0] = 1
+    boundary[1:] += ( nonsolvent.resid[1:] != nonsolvent.resid[:-1] )
+    ###########################################################################
+    # WARNING::: REQUIRES FEWER THAN 100,000 NON-SOLVENT ATOMS (or luck to 
+    #   prevent integer wrap-around artifact in atmid-based boundary detection)
+    boundary[1:] += ( nonsolvent.atmid[1:] <= nonsolvent.atmid[:-1] )
+    ###########################################################################
+    nonsolvent_list = top_table.index[nonsolvent_sel].tolist()
+    nonsolvent_list = np.array(nonsolvent_list)
+    boundary_list = nonsolvent_list[boundary]
+    logging.debug( len(boundary_list) )
+    logging.debug( boundary_list )
+    # Create a matrix to project environment atoms into atom groups
+    env_group_mtx = np.zeros( (len(boundary_list), len(top_table) - cdc_numatompmol) )
+    ###########################################################################
+    # WARNING::: REQUIRES THAT BCL MOLECULE COME JUST BEFORE SOLVENT IN THE 
+    #   TOPOLOGY - the env_group_mtx is a map from [0:bcl_m)+(bcl_m:end] and 
+    #   the boundary index tracks atoms [0:solvent), and to prevent counting
+    #   the bcl_m group as an interacting group, we can exclude the final
+    #   bcl boundary group.
+    for boundary_index in xrange(len(boundary_list)-1):
+    ###########################################################################
+        start = boundary_list[boundary_index]
+        if boundary_index + 2 == len(boundary_list):
+            ###################################################################
+            # WARNING::: REQUIRES THAT THE NONSOLVENT SECTION COME BEFORE
+            #   THE SOLVENT SECTION, AND THAT THE SOLVENT SECTION CONTINUE
+            #   UNTIL THE EOF - the end-index (open-set end) for the final 
+            #   nonsolvent group has the value of the number of nonsolvent
+            #   atoms, and the solvent group continues until the end of the
+            #   array
+            end = len(nonsolvent_sel)
+            ###################################################################
+        else:
+            end = boundary_list[boundary_index + 1]
+        env_group_mtx[boundary_index, start:end] = 1
+    env_group_mtx = scipy.sparse.csr_matrix(env_group_mtx)
+    logging.debug(env_group_mtx.shape)
+    logging.debug(env_group_mtx)
+
+
+    # logging.debug(boundary.shape)
+    # j = 1
+    # for i in xrange(1, len(boundary)):
+    #     if boundary[-i] == 1:
+    #         logging.debug( (len(boundary)-i) % len(boundary) + 1)
+    #         j+=1
+    #     if j > 10:
+    #         break
+    # j = 1
+    # for i in xrange(len(boundary)):
+    #     if boundary[i] == 1:
+    #         logging.debug(i+1)
+    #         j+=1
+    #     if j > 10:
+    #         break
+
+
+    
+
     
     # Get the coordinates for the full system
     i = 1
@@ -59,9 +135,6 @@ def main():
             usecols=(3, 4, 5),
             skip_header = 2, skip_footer = 1)
     
-    cdc_q = pd.read_table(fname_cdc, delim_whitespace=True, header=None, 
-            names=('atm', 'qta', 'q0a', 'q1a', 'qtb', 'q0b', 'q1b'),
-            keep_default_na = None)
 
     U_m = [] 
     for cdc_m in xrange(args.cdc_molnum):
@@ -81,12 +154,12 @@ def main():
         dq_bcl  = cdc_bclmol.q1a - cdc_bclmol.q0a
         #-------------------- --------------------
         # Numpy magic obfustatingly handles all of the 0-based index problems
-        first_ind = min(cdc_m_atomind)
-        last_ind  = max(cdc_m_atomind)
-        atm_env_beg = arr_coords[:(first_ind-1), :]
-        atm_env_end = arr_coords[last_ind:, :]
-        q_env_beg   = top_table.q.values[:(first_ind-1)]
-        q_env_end   = top_table.q.values[last_ind:]     
+        bcl_m_first_ind = min(cdc_m_atomind)
+        bcl_m_last_ind  = max(cdc_m_atomind)
+        atm_env_beg = arr_coords[:(bcl_m_first_ind-1), :]
+        atm_env_end = arr_coords[bcl_m_last_ind:, :]
+        q_env_beg   = top_table.q.values[:(bcl_m_first_ind-1)]
+        q_env_end   = top_table.q.values[bcl_m_last_ind:]     
         atm_env = np.concatenate( (atm_env_beg, atm_env_end) )
         q_env   = np.concatenate( (q_env_beg,   q_env_end)   )
         
@@ -101,9 +174,25 @@ def main():
         K_e2nm_cm1 = 1.16E4
         screening = 1./3.
         U_ij = K_e2nm_cm1 * screening * q_ij * oneoverr_ij
-        U_tot = np.sum(U_ij, axis=(0, 1))
-        U_m.append("{}".format(U_tot))
-    print ", ".join(U_m)
+        U_atm = np.sum(U_ij, axis=1)
+        mode = "GROUP"
+        if mode == "TOTAL":
+            print np.sum(U_atm)
+        if mode == "GROUP":
+            U_group = env_group_mtx.dot(U_atm)
+            ###################################################################
+            # WARNING::: REQUIRES THAT THE NONSOLVENT SECTION COME BEFORE
+            #   THE SOLVENT SECTION, AND THAT THE SOLVENT SECTION CONTINUE
+            #   UNTIL THE EOF - the end-index (open-set end) for the final 
+            #   nonsolvent group has the value of the number of nonsolvent
+            #   atoms, and the solvent group continues until the end of the
+            #   array
+            U_bclm = U_group[-1]
+            for mi in xrange(7-cdc_m):
+                U_group[-(1+mi)] = U_group[-(2+mi)]
+            U_group[-(1+(7-cdc_m))] = U_bclm
+            ###################################################################
+            print " ".join([str(U) for U in U_group])
 
 
 
