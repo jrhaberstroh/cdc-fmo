@@ -2,6 +2,8 @@
 set -o nounset
 set -o errexit
 
+SRCDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+
 TOP=${TOP=~/Jobs/2015-03-4BCL/FMO_conf_CHARMM27/4BCL_pp.top}
 TRJ=${1=UNSET}
 TRJLEN=10
@@ -13,8 +15,9 @@ if [ "TRJ" == "UNSET" ]; then
     echo "No gro trajectory passed, use one!"
     exit 1
 fi
+>&2 echo "WARNING: This program copies $(du -h $TRJ | cut -f1) x 2 data to" \
+        "$SRCDIR/temp, make sure this is OK."
 
-SRCDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 $SRCDIR/top2qop.sh $TOP $SRCDIR/temp/4BCL_AMBER94_ppauto.qop
 TRJ_TMP=$SRCDIR/temp/`basename $TRJ`
 TRJ_TMP_BASE="${TRJ_TMP%.*}"
