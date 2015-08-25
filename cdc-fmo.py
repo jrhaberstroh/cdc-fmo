@@ -84,52 +84,39 @@ def main():
     boundary_list = nonsolvent_list[boundary]
     logging.debug( len(boundary_list) )
     logging.debug( boundary_list )
-    # Create a matrix to project environment atoms into atom groups
-    env_group_mtx = np.zeros( (len(boundary_list), len(top_table) - cdc_numatompmol) )
-    ###########################################################################
-    # WARNING::: REQUIRES THAT BCL MOLECULE COME JUST BEFORE SOLVENT IN THE 
-    #   TOPOLOGY - the env_group_mtx is a map from [0:bcl_m)+(bcl_m:end] and 
-    #   the boundary index tracks atoms [0:solvent), and to prevent counting
-    #   the bcl_m group as an interacting group, we can exclude the final
-    #   bcl boundary group.
-    #   In other words, a zero-row is included in env_group_mtx to pad for
-    #   bcl_m.
-    for boundary_index in xrange(len(boundary_list)-1):
-    ###########################################################################
-        start = boundary_list[boundary_index]
-        if boundary_index + 2 == len(boundary_list):
-            ###################################################################
-            # WARNING::: REQUIRES THAT THE NONSOLVENT SECTION COME BEFORE
-            #   THE SOLVENT SECTION, AND THAT THE SOLVENT SECTION CONTINUE
-            #   UNTIL THE EOF - the end-index (open-set end) for the final 
-            #   nonsolvent group has the value of the number of nonsolvent
-            #   atoms, and the solvent group continues until the end of the
-            #   array
-            end = len(nonsolvent_sel)
-            ###################################################################
-        else:
-            end = boundary_list[boundary_index + 1]
-        env_group_mtx[boundary_index, start:end] = 1
-    env_group_mtx = scipy.sparse.csr_matrix(env_group_mtx)
-    logging.debug(env_group_mtx.shape)
-    logging.debug(env_group_mtx)
 
 
-    # logging.debug(boundary.shape)
-    # j = 1
-    # for i in xrange(1, len(boundary)):
-    #     if boundary[-i] == 1:
-    #         logging.debug( (len(boundary)-i) % len(boundary) + 1)
-    #         j+=1
-    #     if j > 10:
-    #         break
-    # j = 1
-    # for i in xrange(len(boundary)):
-    #     if boundary[i] == 1:
-    #         logging.debug(i+1)
-    #         j+=1
-    #     if j > 10:
-    #         break
+    def mtx_create(boundary_list, top_table, cdc_numatompmol, len_nonsolvent_sel):
+        # Create a matrix to project environment atoms into atom groups
+        env_group_mtx = np.zeros( (len(boundary_list), len(top_table) - cdc_numatompmol) )
+        ###########################################################################
+        # WARNING::: REQUIRES THAT BCL MOLECULE COME JUST BEFORE SOLVENT IN THE 
+        #   TOPOLOGY - the env_group_mtx is a map from [0:bcl_m)+(bcl_m:end] and 
+        #   the boundary index tracks atoms [0:solvent), and to prevent counting
+        #   the bcl_m group as an interacting group, we can exclude the final
+        #   bcl boundary group.
+        #   In other words, a zero-row is included in env_group_mtx to pad for
+        #   bcl_m.
+        for boundary_index in xrange(len(boundary_list)-1):
+        ###########################################################################
+            start = boundary_list[boundary_index]
+            if boundary_index + 2 == len(boundary_list):
+                ###################################################################
+                # WARNING::: REQUIRES THAT THE NONSOLVENT SECTION COME BEFORE
+                #   THE SOLVENT SECTION, AND THAT THE SOLVENT SECTION CONTINUE
+                #   UNTIL THE EOF - the end-index (open-set end) for the final 
+                #   nonsolvent group has the value of the number of nonsolvent
+                #   atoms, and the solvent group continues until the end of the
+                #   array
+                end = len_nonsolvent_sel
+                ###################################################################
+            else:
+                end = boundary_list[boundary_index + 1]
+            env_group_mtx[boundary_index, start:end] = 1
+        env_group_mtx = scipy.sparse.csr_matrix(env_group_mtx)
+        return env_group_mtx
+
+    env_group_mtx = mtx_create(boundary_list, top_table, cdc_numatompmol, len(nonsolvent_sel))
 
 
     
@@ -142,47 +129,63 @@ def main():
     arr_coords = np.genfromtxt(fname_trj, delimiter=(8, 7, 5, 8, 8, 8),
             usecols=(3, 4, 5),
             skip_header = 2, skip_footer = 1)
-    
 
-    U_m = [] 
-    for cdc_m in xrange(args.cdc_molnum):
-        start = (cdc_m    ) * cdc_numatompmol
-        end   = (cdc_m + 1) * cdc_numatompmol
-        cdc_m_atomind = cdc_atomind[start:end]
-        cdc_bclmol = top_table.loc[cdc_m_atomind]
-        # cdc_bclmol = pd.merge(cdc_bclmol, cdc_q, how='left', on='atm')
-        cdc_bclmol = cdc_bclmol.reset_index().merge(cdc_q, on='atm', how='inner').set_index('index')
-        if len(cdc_bclmol) != len(cdc_q):
-            raise ValueError("Not all atoms in CDC file were found in gro file"
-                    "(seeking {} found {})".format(len(cdc_q), len(cdc_bclmol)))
 
+    def compute_u(cdc_m):
+        def get_bclatms(cdc_m):
+            startbclm = (cdc_m    ) * cdc_numatompmol
+            endbclm   = (cdc_m + 1) * cdc_numatompmol
+            cdc_m_atomind = cdc_atomind[startbclm:endbclm]
+            cdc_bclmol = top_table.loc[cdc_m_atomind]
+            cdc_bclmol = cdc_bclmol.reset_index().merge(cdc_q, on='atm', how='inner').set_index('index')
+            if len(cdc_bclmol) != len(cdc_q):
+                raise ValueError("Not all atoms in CDC file were found in gro file"
+                        "(seeking {} found {})".format(len(cdc_q), len(cdc_bclmol)))
+            return cdc_m_atomind, cdc_bclmol
+
+        # cdc_m_atomind: absolute atomic index for bcl_m (??)
+        # cdc_bclmol   : topology for bcl_m molecule
+        cdc_m_atomind, cdc_bclmol = get_bclatms(cdc_m)
+       
+         
         #-------------------- --------------------
-        # NEED TO SUBTRACT 1 FOR 0-BASED INDEX
+        # Because arr_coords is 0-based, cdc_bclmol.index is 1-based,
+        #   we must shift by one.
+        # atm_bcl  : coordinates for bcl molecule, looked up in arr_coords
+        # dq_bcl   : dq for bcl, looked up in cdc_bclmol
         atm_bcl = arr_coords[cdc_bclmol.index - 1]
         dq_bcl  = cdc_bclmol.q1a - cdc_bclmol.q0a
-        #-------------------- --------------------
-        # Numpy magic obfustatingly handles all of the 0-based index problems
         bcl_m_first_ind = min(cdc_m_atomind)
         bcl_m_last_ind  = max(cdc_m_atomind)
-        atm_env_beg = arr_coords[:(bcl_m_first_ind-1), :]
-        atm_env_end = arr_coords[bcl_m_last_ind:, :]
-        q_env_beg   = top_table.q.values[:(bcl_m_first_ind-1)]
-        q_env_end   = top_table.q.values[bcl_m_last_ind:]     
-        atm_env = np.concatenate( (atm_env_beg, atm_env_end) )
-        q_env   = np.concatenate( (q_env_beg,   q_env_end)   )
-        
-        s_bcl = np.tensordot(atm_bcl, hinv, axes=(1, 1))
-        s_env = np.tensordot(atm_env, hinv, axes=(1, 1))
-        s_ij  = s_env[:, np.newaxis, :] - s_bcl[np.newaxis, :, :]
-        s_ij -= np.rint(s_ij)
-        r_ij  = np.tensordot(s_ij, h, axes=(2,1))
-        rmag_ij= np.sqrt(np.sum(np.square(r_ij), axis=2))
-        oneoverr_ij = np.reciprocal(rmag_ij)
-        q_ij = q_env[:, np.newaxis] * dq_bcl[np.newaxis, :]
-        K_e2nm_cm1 = 1.16E4
-        screening = 1./3.
-        U_ij = K_e2nm_cm1 * screening * q_ij * oneoverr_ij
-        U_atm = np.sum(U_ij, axis=1)
+
+        #-------------------- --------------------
+        # Numpy magic obfustatingly handles all of the 0-based index problems
+        def get_env():
+            atm_env_beg = arr_coords[:(bcl_m_first_ind-1), :]
+            atm_env_end = arr_coords[bcl_m_last_ind:, :]
+            q_env_beg   = top_table.q.values[:(bcl_m_first_ind-1)]
+            q_env_end   = top_table.q.values[bcl_m_last_ind:]     
+            atm_env = np.concatenate( (atm_env_beg, atm_env_end) )
+            q_env   = np.concatenate( (q_env_beg,   q_env_end)   )
+            return atm_env, q_env
+        atm_env, q_env = get_env()
+       
+        # Compute with periodic boundary conditions 
+        def compute_u_pbc():
+            s_bcl = np.tensordot(atm_bcl, hinv, axes=(1, 1))
+            s_env = np.tensordot(atm_env, hinv, axes=(1, 1))
+            s_ij  = s_env[:, np.newaxis, :] - s_bcl[np.newaxis, :, :]
+            s_ij -= np.rint(s_ij)
+            r_ij  = np.tensordot(s_ij, h, axes=(2,1))
+            rmag_ij= np.sqrt(np.sum(np.square(r_ij), axis=2))
+            oneoverr_ij = np.reciprocal(rmag_ij)
+            q_ij = q_env[:, np.newaxis] * dq_bcl[np.newaxis, :]
+            K_e2nm_cm1 = 1.16E4
+            screening = 1./3.
+            U_ij = K_e2nm_cm1 * screening * q_ij * oneoverr_ij
+            U_atm = np.sum(U_ij, axis=1)
+            return U_atm
+        U_atm = compute_u_pbc()
         if args.total:
             print(np.sum(U_atm))
         else:
@@ -205,6 +208,10 @@ def main():
             ###################################################################
             warnings("Length of U_group: {}".format(len(U_group)))
             print(" ".join([str(U) for U in U_group]))
+
+    for cdc_m in xrange(args.cdc_molnum):
+        compute_u(cdc_m)
+
 
 
 
