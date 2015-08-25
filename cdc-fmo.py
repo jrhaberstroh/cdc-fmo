@@ -1,3 +1,4 @@
+from __future__ import print_function
 import numpy as np
 import numpy.linalg as LA
 import scipy.sparse
@@ -6,9 +7,12 @@ import matplotlib as plt
 import subprocess
 import argparse
 import logging
+import sys
+
+def warnings(*objs):
+    print("WARNING: ", *objs, file=sys.stderr)
 
 def main():
-
     parser = argparse.ArgumentParser()
     parser.add_argument('-groframe', required=True)
     parser.add_argument('-qtop', required=True)
@@ -16,6 +20,8 @@ def main():
     parser.add_argument('-cdc_molname', type=str, default='BCL')
     parser.add_argument('-cdc_molnum', type=int, default=7)
     parser.add_argument('-debug', action='store_true')
+    parser.add_argument('-nosolv', action='store_true')
+    parser.add_argument('-total', action='store_true')
     args = parser.parse_args()
     fname_trj=args.groframe
     fname_top=args.qtop
@@ -86,6 +92,8 @@ def main():
     #   the boundary index tracks atoms [0:solvent), and to prevent counting
     #   the bcl_m group as an interacting group, we can exclude the final
     #   bcl boundary group.
+    #   In other words, a zero-row is included in env_group_mtx to pad for
+    #   bcl_m.
     for boundary_index in xrange(len(boundary_list)-1):
     ###########################################################################
         start = boundary_list[boundary_index]
@@ -175,10 +183,9 @@ def main():
         screening = 1./3.
         U_ij = K_e2nm_cm1 * screening * q_ij * oneoverr_ij
         U_atm = np.sum(U_ij, axis=1)
-        mode = "GROUP"
-        if mode == "TOTAL":
-            print np.sum(U_atm)
-        if mode == "GROUP":
+        if args.total:
+            print(np.sum(U_atm))
+        else:
             U_group = env_group_mtx.dot(U_atm)
             ###################################################################
             # WARNING::: REQUIRES THAT THE NONSOLVENT SECTION COME BEFORE
@@ -187,12 +194,17 @@ def main():
             #   nonsolvent group has the value of the number of nonsolvent
             #   atoms, and the solvent group continues until the end of the
             #   array
+            if args.nosolv:
+                padding_offset = cdc_m + 1
+            else: 
+                padding_offset = cdc_m
             U_bclm = U_group[-1]
-            for mi in xrange(7-cdc_m):
+            for mi in xrange(7-padding_offset):
                 U_group[-(1+mi)] = U_group[-(2+mi)]
-            U_group[-(1+(7-cdc_m))] = U_bclm
+            U_group[-(1+(7-padding_offset))] = U_bclm
             ###################################################################
-            print " ".join([str(U) for U in U_group])
+            warnings("Length of U_group: {}".format(len(U_group)))
+            print(" ".join([str(U) for U in U_group]))
 
 
 
