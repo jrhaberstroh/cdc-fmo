@@ -18,11 +18,11 @@ cdctraj.sh will assume all other source shares its own directory.
 
 Execute the following
 
-JOBS=/path/to/output                             \
-TOP=/path/to/fmotopology_pp.top                  \
+TOP=/path/to/fmo_gromacs_top_preprocessed.top    \
 ATOMS=(number of atoms per frame)                \
 TRJLEN=(number of frames to use from trajectory) \
-./cdctraj.sh 
+./cdctraj.sh /path/to/trajectory.gro             \
+    > /path/to/output.txt
 
 ~~~~~                      MORE INFORMATION                               ~~~~~
 

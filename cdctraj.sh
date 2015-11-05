@@ -4,7 +4,6 @@
 # computations. 
 #   Usage: 
 #     $1       - .gro format trajectory to pass in
-#     JOBS     - base location for "job" files
 #     TOP      - Preprocessed GROMACS topology file
 #     ATOMS    - Number of atoms in each frame of $1
 #     TRJLEN   - Number of frames to process within gro file ($1). If 
@@ -20,7 +19,7 @@ SRCDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 CDCFMO_ARGS=${CDCFMO_ARGS= }
 CDCFMO_PYARGS=${CDCFMO_PYARGS= }
 
-TOP=${TOP=$JOBS/2015-03-4BCL/FMO_conf/4BCL_pp.top}
+TOP=${TOP?Input Error: cdctraj.sh requires topology input via TOP envt var}
 >&2 echo TRJ used: ${1?ERROR: usage: Pass .gro trajectory as \$1}
 TRJ=$1
 TRJLEN=${TRJLEN=10}
