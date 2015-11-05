@@ -10,6 +10,7 @@
 #                successive files repeat the final frame, take care to
 #                set TRJLEN to a small number.
 #                NOTE: Not error checked to assert that TRJLEN <= numframes
+#     NODEL    - If true, do not delete temp folder upon initiation
 
 #!/bin/bash
 set -o nounset
@@ -20,12 +21,23 @@ CDCFMO_ARGS=${CDCFMO_ARGS= }
 CDCFMO_PYARGS=${CDCFMO_PYARGS= }
 
 TOP=${TOP?Input Error: cdctraj.sh requires topology input via TOP envt var}
+ATOMS=${ATOMS?Input Error: number of atoms required}
 >&2 echo TRJ used: ${1?ERROR: usage: Pass .gro trajectory as \$1}
+
+if [ ! "$NODEL" = "true" ]; then
+    if [ -e $SRCDIR/temp ]; then
+        rm -r $SRCDIR/temp
+    fi
+    mkdir $SRCDIR/temp
+fi
+if [ ! -e $SRCDIR/temp ]; then
+    mkdir $SRCDIR/temp
+fi
+
 TRJ=$1
 TRJLEN=${TRJLEN=10}
 TRJLEN=$(echo $TRJLEN - 1 | bc)
-ATOMS=${ATOMS=99548}
-ATOMS=$(echo $ATOMS + 3 | bc)
+LINES=$(echo $ATOMS + 3 | bc)
 
 >&2 echo "WARNING: This program copies $(du -h $TRJ | cut -f1) x 2 data to" \
         "$SRCDIR/temp, make sure this is OK."
@@ -37,7 +49,7 @@ TRJ_TMP_SUFF="${TRJ_TMP##*.}"
 
 cp $TRJ $TRJ_TMP
 # TODO: Split this using trjconv instead of with this awful method
-split -d --additional-suffix .$TRJ_TMP_SUFF -l $ATOMS $TRJ_TMP $TRJ_TMP_BASE-
+split -d --additional-suffix .$TRJ_TMP_SUFF -l $LINES $TRJ_TMP $TRJ_TMP_BASE-
 
 
 for frame in $(seq -f %02g 00 $TRJLEN); do
