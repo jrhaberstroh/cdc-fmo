@@ -19,6 +19,7 @@ set -o errexit
 SRCDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 CDCFMO_ARGS=${CDCFMO_ARGS= }
 CDCFMO_PYARGS=${CDCFMO_PYARGS= }
+NODEL=${NODEL=false}
 
 TOP=${TOP?Input Error: cdctraj.sh requires topology input via TOP envt var}
 ATOMS=${ATOMS?Input Error: number of atoms required}
@@ -49,12 +50,14 @@ TRJ_TMP_SUFF="${TRJ_TMP##*.}"
 
 cp $TRJ $TRJ_TMP
 # TODO: Split this using trjconv instead of with this awful method
-split -d --additional-suffix .$TRJ_TMP_SUFF -l $LINES $TRJ_TMP $TRJ_TMP_BASE-
+split -d --additional-suffix .$TRJ_TMP_SUFF -a 6 -l $LINES $TRJ_TMP $TRJ_TMP_BASE-
 
-
-for frame in $(seq -f %02g 00 $TRJLEN); do
+FINAL=$(printf "%06d" $TRJLEN)
+>&2 echo final frame: $FINAL
+for frame in $(seq -f %06g 000000 $FINAL); do
     # TODO: Implement measurement of rate-limiting step in script output,
     #       for use on NERSC and here
+    >&2 echo current frame: $frame
     if [ ! -e $TRJ_TMP_BASE-$frame.$TRJ_TMP_SUFF ]; then
         echo "ERROR: File \"$TRJ_TMP_BASE-$frame.$TRJ_TMP_SUFF\" does not exist, reduce TRJLEN"
         exit 1
