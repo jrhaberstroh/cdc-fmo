@@ -20,6 +20,7 @@ SRCDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 CDCFMO_ARGS=${CDCFMO_ARGS= }
 CDCFMO_PYARGS=${CDCFMO_PYARGS= }
 NODEL=${NODEL=false}
+PYARGS=${PYARGS-}
 
 TOP=${TOP?Input Error: cdctraj.sh requires topology input via TOP envt var}
 ATOMS=${ATOMS?Input Error: number of atoms required}
@@ -65,6 +66,6 @@ for frame in $(seq -f %06g 000000 $FINAL); do
     python $CDCFMO_PYARGS $SRCDIR/cdc-fmo.py $CDCFMO_ARGS \
             -groframe $TRJ_TMP_BASE-$frame.$TRJ_TMP_SUFF \
             -qtop $SRCDIR/temp/4BCL_AMBER94_ppauto.qop \
-            -qcdc $SRCDIR/data/bcl_cdc.txt
+            -qcdc $SRCDIR/data/bcl_cdc.txt $PYARGS
 done
 

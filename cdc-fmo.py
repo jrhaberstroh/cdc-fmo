@@ -13,21 +13,67 @@ def warnings(*objs):
     print("WARNING: ", *objs, file=sys.stderr)
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=
+"""
+Program for computing Charge Density Coupling (cdc) disaggregated by location.
+
+note: 
+UBIF == undefined behavior if false
+ EIF == error if false
+
+INPUT
+==========================
+where       |   -groframe filename
+format      |   .gro file format
+restriction |   UBIF: Single-frame gromacs file
+
+where       |   -qtop filename
+description |   Charge-only pseudo topology
+format      |   same as .top format, sans headings, but with all atoms 
+            |       verbosely enumerated
+restriction |   UBIF: < 100,000 non-solvent atoms
+            |   UBIF: Ordered as NON-SOLVENT, SOLVENT, EOF
+            |   UBIF: Molecule for cdc is the final nonsolvent molecule
+
+where       |   -qcdc filename
+description |   cdc charges in tabular format from original Ceccarelli 
+            |       publication
+restriction |   EIF: All atom names in -qcdc are present in the molecule
+            |       found from -cdc_molname matches in the -groframe
+
+where       |   -cdc_molname string -cdc_molnum int
+description |   Find all atoms in the .gro file with -cdc_molname, and split
+            |   them into -cdc_molnum evenly sized groups
+restriction |   EIF: Atoms of type -cdc_molname must be able to be split into 
+            |       evenly sized groups
+
+OUTPUT
+==========================
+where       |   stdout
+format      |   for t in xrange(time):
+            |       for i in xrange(sites):
+            |           print(" ".join([str(U) for U in U_group[i]]))
+description |   Index [0,-1] are grouped by residue 
+            |   Index [-1] is all solvent atoms (?)
+
+""")
     parser.add_argument('-groframe', required=True)
     parser.add_argument('-qtop', required=True)
     parser.add_argument('-qcdc', required=True)
     parser.add_argument('-cdc_molname', type=str, default='BCL')
     parser.add_argument('-cdc_molnum', type=int, default=7)
+    parser.add_argument('-nosolv', action='store_true', help="Exclude the solvent group")
+    parser.add_argument('-total', action='store_true', help="Print only the aggregated sum")
+    parser.add_argument('-res', type=int, help="Print only the selected residue (one-based index)")
     parser.add_argument('-debug', action='store_true')
-    parser.add_argument('-nosolv', action='store_true')
-    parser.add_argument('-total', action='store_true')
     args = parser.parse_args()
     fname_trj=args.groframe
     fname_top=args.qtop
     fname_cdc=args.qcdc
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
+    if args.total and (not args.res is None):
+        raise ValueError("-total and -res are both set, please use only one of those options")
 
     N_framelines = 0
     str_box      = ""
@@ -207,7 +253,10 @@ def main():
             U_group[-(1+(7-padding_offset))] = U_bclm
             ###################################################################
             warnings("Length of U_group: {}".format(len(U_group)))
-            print(" ".join([str(U) for U in U_group]))
+            if args.res is None:
+                print(" ".join([str(U) for U in U_group]))
+            else:
+                print(str(U_group[args.res-1]))
 
     for cdc_m in xrange(args.cdc_molnum):
         compute_u(cdc_m)
