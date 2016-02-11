@@ -11,6 +11,7 @@
 #                set TRJLEN to a small number.
 #                NOTE: Not error checked to assert that TRJLEN <= numframes
 #     NODEL    - If true, do not delete temp folder upon initiation
+#     PYARGS   - Any optional arguments to pass to python
 
 #!/bin/bash
 set -o nounset
