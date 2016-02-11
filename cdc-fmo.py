@@ -66,6 +66,7 @@ description |   Index [0,-1] are grouped by residue
     parser.add_argument('-total', action='store_true', help="Print only the aggregated sum")
     parser.add_argument('-res', type=int, help="Print only the selected residue (one-based index)")
     parser.add_argument('-debug', action='store_true')
+    parser.add_argument('-proto', action='store_true')
     args = parser.parse_args()
     fname_trj=args.groframe
     fname_top=args.qtop
@@ -694,8 +695,10 @@ description |   Index [0,-1] are grouped by residue
         print(" ".join([str(U) for U in site_n_couple]))
 
     for cdc_m in xrange(args.cdc_molnum):
-        # compute_u(cdc_m)
-        proto_compute_u(cdc_m)
+        if args.proto:
+            proto_compute_u(cdc_m)
+        else:
+            compute_u(cdc_m)
 
 
 
