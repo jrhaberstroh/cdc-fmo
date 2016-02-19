@@ -1,6 +1,7 @@
 from __future__ import print_function
 import numpy as np
 import numpy.linalg as LA
+import numpy.random as RA
 import scipy.sparse
 import pandas as pd
 import matplotlib as plt
@@ -8,6 +9,8 @@ import subprocess
 import argparse
 import logging
 import sys
+
+env_atm = 4025 # Environment atom index to debug with
 
 def warnings(*objs):
     print("WARNING: ", *objs, file=sys.stderr)
@@ -67,6 +70,8 @@ description |   Index [0,-1] are grouped by residue
     parser.add_argument('-res', type=int, help="Print only the selected residue (one-based index)")
     parser.add_argument('-debug', action='store_true')
     parser.add_argument('-proto', action='store_true')
+    parser.add_argument('-indie', action='store_true')
+    parser.add_argument('-noise', type=float, default=None, help="Amount of noise to add to position variables")
     args = parser.parse_args()
     fname_trj=args.groframe
     fname_top=args.qtop
@@ -104,6 +109,110 @@ description |   Index [0,-1] are grouped by residue
     # 
     # I interpret this to mean that rows of H are v1, v2, and v3, and the columns are (x), (y), and (z).
     # This means that we have 0,0; 1,1; 2,2; 0,1; 0,2; 1,0;, 1,2; 2,0; 2,1;
+    # 
+    # AFTERWARDS:
+    #  If |r_ij| > 1/4 min( box_xx, box_yy, box_zz )...
+    #    * Search all neighboring displacements
+    #    * Select the displacement with the smallest |r_ij|
+    # 
+
+    #  void pbc_dx(const t_pbc *pbc, const rvec x1, const rvec x2, rvec dx)
+    #  {
+    #      int      i, j;
+    #      rvec     dx_start, trial;
+    #      real     d2min, d2trial;
+    #      gmx_bool bRot;
+    #  
+    #      rvec_sub(x1, x2, dx);
+    #  
+    #      switch (pbc->ePBCDX)
+    #      {
+    #          case epbcdxRECTANGULAR:
+    #              for (i = 0; i < DIM; i++)
+    #              {
+    #                  while (dx[i] > pbc->hbox_diag[i])
+    #                  {
+    #                      dx[i] -= pbc->fbox_diag[i];
+    #                  }
+    #                  while (dx[i] <= pbc->mhbox_diag[i])
+    #                  {
+    #                      dx[i] += pbc->fbox_diag[i];
+    #                  }
+    #              }
+    #              break;
+    #          case epbcdxTRICLINIC:
+    #              for (i = DIM-1; i >= 0; i--)
+    #              {
+    #                  while (dx[i] > pbc->hbox_diag[i])
+    #                  {
+    #                      for (j = i; j >= 0; j--)
+    #                      {
+    #                          dx[j] -= pbc->box[i][j];
+    #                      }
+    #                  }
+    #                  while (dx[i] <= pbc->mhbox_diag[i])
+    #                  {
+    #                      for (j = i; j >= 0; j--)
+    #                      {
+    #                          dx[j] += pbc->box[i][j];
+    #                      }
+    #                  }
+    #              }
+    #              /* dx is the distance in a rectangular box */
+    #              d2min = norm2(dx);
+    #              if (d2min > pbc->max_cutoff2)
+    #              {
+    #                  copy_rvec(dx, dx_start);
+    #                  d2min = norm2(dx);
+    #                  /* Now try all possible shifts, when the distance is within max_cutoff
+    #                   * it must be the shortest possible distance.
+    #                   */
+    #                  i = 0;
+    #                  while ((d2min > pbc->max_cutoff2) && (i < pbc->ntric_vec))
+    #                  {
+    #                      rvec_add(dx_start, pbc->tric_vec[i], trial);
+    #                      d2trial = norm2(trial);
+    #                      if (d2trial < d2min)
+    #                      {
+    #                          copy_rvec(trial, dx);
+    #                          d2min = d2trial;
+    #                      }
+    #                      i++;
+    #                  }
+    #              }
+    #              break;
+    #      }
+    #  }
+    # 
+    # real max_cutoff2(int ePBC, matrix box)
+    # {
+    #     real min_hv2, min_ss;
+    # 
+    #     /* Physical limitation of the cut-off
+    #      * by half the length of the shortest box vector.
+    #      */
+    #     min_hv2 = min(0.25*norm2(box[XX]), 0.25*norm2(box[YY]));
+    #     if (ePBC != epbcXY)
+    #     {
+    #         min_hv2 = min(min_hv2, 0.25*norm2(box[ZZ]));
+    #     }
+    # 
+    #     /* Limitation to the smallest diagonal element due to optimizations:
+    #      * checking only linear combinations of single box-vectors (2 in x)
+    #      * in the grid search and pbc_dx is a lot faster
+    #      * than checking all possible combinations.
+    #      */
+    #     if (ePBC == epbcXY)
+    #     {
+    #         min_ss = min(box[XX][XX], box[YY][YY]);
+    #     }
+    #     else
+    #     {
+    #         min_ss = min(box[XX][XX], min(box[YY][YY]-fabs(box[ZZ][YY]), box[ZZ][ZZ]));
+    #     }
+    # 
+    #     return min(min_hv2, min_ss*min_ss);
+    # }
 
     box_conf = ((0,0), (1,1), (2,2),
                 (0,1), (0,2), (1,0),
@@ -112,8 +221,9 @@ description |   Index [0,-1] are grouped by residue
     float_box = [float(elem) for elem in str_box.split()]
     for elem, pos in zip(float_box, box_conf):
         box_tensor[pos] = elem
-    h    = box_tensor
-    hinv = LA.inv(box_tensor)
+    h    = box_tensor.T
+    hinv = LA.inv(h)
+    max_cutoff2 = .25 * np.amin(np.diag(h))
     assert(np.tensordot(hinv, h, (1,0))[0,0] - 1.0 < 0.00001)
 
     # Build the topology
@@ -198,6 +308,8 @@ description |   Index [0,-1] are grouped by residue
             usecols=(3, 4, 5),
             skip_header = 2, skip_footer = 1)
 
+    if not args.noise is None: 
+        arr_coords += RA.uniform(-args.noise/2.0, args.noise/2.0, arr_coords.shape)
 
     def compute_u(cdc_m):
         def get_bclatms(cdc_m):
@@ -259,17 +371,19 @@ description |   Index [0,-1] are grouped by residue
             U_ij = K_e2nm_cm1 * screening * q_ij * oneoverr_ij
             if cdc_m == 1:
                 logging.debug("BCL %d: %f %f %f (%f)", cdc_m + 367, atm_bcl[0,0], atm_bcl[0,1], atm_bcl[0,2], dq_bcl.values[0])
-                logging.debug("ENV %d: %f %f %f (%f)", cdc_m + 367, atm_env[0,0], atm_env[0,1], atm_env[0,2], q_env[0])
-                logging.debug("DIST %d: %f", cdc_m + 367, rmag_ij[0,0])
+                logging.debug("ENV %d: %f %f %f (%f)", env_atm+1, atm_env[env_atm,0], atm_env[env_atm,1], atm_env[env_atm,2], q_env[env_atm])
+                logging.debug("DIST %d: %f", cdc_m + 367, rmag_ij[env_atm,0])
                 logging.debug("KES %d: %f", cdc_m + 367, K_e2nm_cm1 / 349.757)
-                logging.debug("INTQ %d: %f", cdc_m + 367, q_ij[0,0])
-                logging.debug("INTR %d: %f", cdc_m + 367, U_ij[0,0])
+                logging.debug("INTQ %d: %f", cdc_m + 367, q_ij[env_atm,0])
+                logging.debug("INTR %d: %f", cdc_m + 367, U_ij[env_atm,0])
             U_atm = np.sum(U_ij, axis=1)
             warnings("U_ij shape: {}".format(U_ij.shape))
             return U_atm
         U_atm = compute_u_pbc()
         if args.total:
             print(np.sum(U_atm))
+        elif args.indie:
+            print(" ".join([str(U) for U in U_atm]))
         else:
             U_group = env_group_mtx.dot(U_atm)
             ###################################################################
@@ -654,7 +768,7 @@ description |   Index [0,-1] are grouped by residue
         354,354,354,354,354,354,354,354,354,354,354,355,355,355,355,
         355,355,355,355,355,355,355,355,355,355,355,355,355,355,355,
         355,355,356,356,356,356,356,356,356,356,356,356,357,357,357,
-        357,357,357,357,357,357,357,357,357,357,357,357,357,357,360])
+        357,357,357,357,357,357,357,357,357,357,357,357,357,357,357])
 
         bcl_cdc_charges = np.array([0.017,0.027,0.021,0.000,0.053,0.000,0.030,0.000,0.028,-0.020,-0.031,-0.009,0.000,-0.003,0.000,-0.004,0.000,0.000,0.000,-0.004,0.000,0.000,0.001,0.000,0.000,-0.003,0.001,0.001,0.014,-0.023,-0.070,0.027,0.027,0.001,0.000,0.000,0.000,0.023,0.013,0.000,0.000,0.000,0.000,0.039,-0.041,-0.060,-0.005,0.000,-0.003,0.000,-0.003,0.000,0.000,0.000,-0.004,0.000,0.000,-0.001,0.000,0.000,0.000,0.012,-0.053,-0.047,0.018,-0.004,-0.002,0.000,0.000,0.000,0.027,0.009,-0.002,0.000,-0.002,0.002,0.003,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000])
 
@@ -675,6 +789,26 @@ description |   Index [0,-1] are grouped by residue
         s_ijx -= np.rint(s_ijx)
         r_ijx  = np.tensordot(s_ijx, h, axes=(2,1))
         rmag_ij= np.sqrt(np.sum(np.square(r_ijx), axis=2))
+
+        # Check all adjacent neighbors if the initial distance is greater
+        # than max_cutoff2 to use the compact representation
+        toolong = rmag_ij > max_cutoff2
+        rstart_kx = np.copy(r_ijx[toolong])
+        for i0 in xrange(6):
+            pm = ((i0 % 2) * 2) - 1
+            i  = i0 / 2
+            rshift_kx = rstart_kx - pm * h[np.newaxis, :, i]
+            rshiftmag_k = np.sqrt(np.sum(np.square(rshift_kx), axis=1))
+            replace_ind = rshiftmag_k < rmag_ij[toolong]
+            logging.debug(replace_ind.shape)
+            logging.debug(rstart_kx.shape)
+            logging.debug(rshift_kx.shape)
+            logging.debug(rshift_kx[replace_ind].shape)
+            logging.debug(r_ijx[toolong].shape)
+            logging.debug(r_ijx[toolong][replace_ind].shape)
+            r_ijx[toolong][replace_ind] = rshift_kx[replace_ind, :]
+            rmag_ij[toolong][replace_ind]     = rshiftmag_k[replace_ind]
+
         oneoverr_ij = np.reciprocal(rmag_ij)
         q_ij = q_env[:, np.newaxis] * bcl_cdc_charges[np.newaxis, :]
         K_e2nm_cm1 = 1.16E4
@@ -683,21 +817,31 @@ description |   Index [0,-1] are grouped by residue
         U_ij = K_e2nm_cm1 * screening * q_ij * oneoverr_ij
         if cdc_m == 1:
             logging.debug("BCL %d: %f %f %f (%f)", cdc_m + 367, atm_bcl[0,0], atm_bcl[0,1], atm_bcl[0,2], bcl_cdc_charges[0])
-            logging.debug("ENV %d: %f %f %f (%f)", cdc_m + 367, atm_env[0,0], atm_env[0,1], atm_env[0,2], q_env[0])
-            logging.debug("DIST %d: %f", cdc_m + 367, rmag_ij[0,0])
+            logging.debug("ENV %d: %f %f %f (%f)", cdc_m + 367, atm_env[env_atm,0], atm_env[env_atm,1], atm_env[env_atm,2], q_env[env_atm])
+            logging.debug("DIST %d: %f", cdc_m + 367, rmag_ij[env_atm,0])
             logging.debug("KES %d: %f", cdc_m + 367, K_e2nm_cm1 / 349.757)
-            logging.debug("INTQ %d: %f", cdc_m + 367, q_ij[0,0])
-            logging.debug("INTR %d: %f", cdc_m + 367, U_ij[0,0])
+            logging.debug("INTQ %d: %f", cdc_m + 367, q_ij[env_atm,0])
+            logging.debug("INTR %d: %f", cdc_m + 367, U_ij[env_atm,0])
         logging.debug(U_ij.shape)
         U_atom = np.sum(U_ij, axis=1)
-        for i in xrange(len(BCL4_resnr)):
-            site_n_couple[BCL4_resnr[i] - min(BCL4_resnr)] += U_atom[i]
-        print(" ".join([str(U) for U in site_n_couple]))
-
+        if args.total:
+            print(np.sum(U_atom))
+        elif args.indie:
+            # SAFETY PIGSSSSSSSSSSSSSSSSSSSSSS
+            # print(" ".join([str(U) for U in U_atom]))
+            # print(" ".join([str(U) for U in np.sum(rmag_ij, axis=1)]))
+            print(" ".join([str(-U) for U in np.sum(r_ijx[:, :, 0], axis=1)]))
+            
+        else:
+            for i in xrange(len(BCL4_resnr)):
+                site_n_couple[BCL4_resnr[i] - min(BCL4_resnr)] += U_atom[i]
+            print(" ".join([str(U) for U in site_n_couple]))
     for cdc_m in xrange(args.cdc_molnum):
         if args.proto:
+            logging.info("Running with prototype code")
             proto_compute_u(cdc_m)
         else:
+            logging.info("Running with real code")
             compute_u(cdc_m)
 
 
