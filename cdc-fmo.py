@@ -222,6 +222,7 @@ description |   Index [0,-1] are grouped by residue
     for elem, pos in zip(float_box, box_conf):
         box_tensor[pos] = elem
     h    = box_tensor.T
+    logging.debug(h)
     hinv = LA.inv(h)
     max_cutoff2 = .25 * np.amin(np.diag(h))
     assert(np.tensordot(hinv, h, (1,0))[0,0] - 1.0 < 0.00001)
@@ -363,6 +364,43 @@ description |   Index [0,-1] are grouped by residue
             s_ijx -= np.rint(s_ijx)
             r_ijx  = np.tensordot(s_ijx, h, axes=(2,1))
             rmag_ij= np.sqrt(np.sum(np.square(r_ijx), axis=2))
+
+            # Check all adjacent neighbors if the initial distance is greater
+            # than max_cutoff2 to use the compact representation
+            toolong = rmag_ij > max_cutoff2
+            rstart_kx = np.copy(r_ijx[toolong])
+            rfix_kx   = np.copy(r_ijx[toolong])
+            rmagfix_k = np.copy(rmag_ij[toolong])
+            r_ijx_changed = False
+            for i0 in xrange(12):
+                pm = ((i0 % 2) * 2) - 1
+                i  = i0 / 2
+                if i in [0, 1, 2]:
+                    latvec = h[np.newaxis, :, i]
+                    rshift_kx = rstart_kx + pm * latvec
+                elif i in [3, 4, 5]:
+                    i -= 3
+                    if i < 2:
+                        latvec = h[np.newaxis, :, 2] - h[np.newaxis, :, i]
+                    elif i == 2:
+                        latvec = h[np.newaxis, :, 2] - h[np.newaxis, :, 0] - h[np.newaxis, :, 1] 
+                    rshift_kx = rstart_kx + pm * latvec
+
+                rshiftmag_k = np.sqrt(np.sum(np.square(rshift_kx), axis=1))
+                replace_ind = rshiftmag_k < rmagfix_k
+                if np.any(replace_ind):
+                    r_ijx_changed=True
+                    logging.debug("Replacing {} values".format(np.sum(replace_ind)))
+                    # logging.debug(rstart_kx.shape)
+                    # logging.debug(rshift_kx.shape)
+                    # logging.debug(rshift_kx[replace_ind].shape)
+                    # logging.debug(r_ijx[toolong].shape)
+                    # logging.debug(r_ijx[toolong][replace_ind].shape)
+                    rfix_kx[replace_ind]   = rshift_kx[replace_ind, :]
+                    rmagfix_k[replace_ind] = rshiftmag_k[replace_ind]
+            r_ijx[toolong] = rfix_kx
+            rmag_ij[toolong] = rmagfix_k
+
             oneoverr_ij = np.reciprocal(rmag_ij)
             q_ij = q_env[:, np.newaxis] * dq_bcl[np.newaxis, :]
             K_e2nm_cm1 = 1.16E4
@@ -794,20 +832,40 @@ description |   Index [0,-1] are grouped by residue
         # than max_cutoff2 to use the compact representation
         toolong = rmag_ij > max_cutoff2
         rstart_kx = np.copy(r_ijx[toolong])
-        for i0 in xrange(6):
+        rfix_kx   = np.copy(r_ijx[toolong])
+        rmagfix_k = np.copy(rmag_ij[toolong])
+        r_ijx_changed = False
+        for i0 in xrange(12):
             pm = ((i0 % 2) * 2) - 1
             i  = i0 / 2
-            rshift_kx = rstart_kx - pm * h[np.newaxis, :, i]
+            if i in [0, 1, 2]:
+                latvec = h[np.newaxis, :, i]
+                rshift_kx = rstart_kx + pm * latvec
+            elif i in [3, 4, 5]:
+                i -= 3
+                if i < 2:
+                    latvec = h[np.newaxis, :, 2] - h[np.newaxis, :, i]
+                elif i == 2:
+                    latvec = h[np.newaxis, :, 2] - h[np.newaxis, :, 0] - h[np.newaxis, :, 1] 
+                rshift_kx = rstart_kx + pm * latvec
+
             rshiftmag_k = np.sqrt(np.sum(np.square(rshift_kx), axis=1))
-            replace_ind = rshiftmag_k < rmag_ij[toolong]
-            logging.debug(replace_ind.shape)
-            logging.debug(rstart_kx.shape)
-            logging.debug(rshift_kx.shape)
-            logging.debug(rshift_kx[replace_ind].shape)
-            logging.debug(r_ijx[toolong].shape)
-            logging.debug(r_ijx[toolong][replace_ind].shape)
-            r_ijx[toolong][replace_ind] = rshift_kx[replace_ind, :]
-            rmag_ij[toolong][replace_ind]     = rshiftmag_k[replace_ind]
+            replace_ind = rshiftmag_k < rmagfix_k
+            if np.any(replace_ind):
+                r_ijx_changed=True
+                logging.debug("Replacing {} values".format(np.sum(replace_ind)))
+                # logging.debug(rstart_kx.shape)
+                # logging.debug(rshift_kx.shape)
+                # logging.debug(rshift_kx[replace_ind].shape)
+                # logging.debug(r_ijx[toolong].shape)
+                # logging.debug(r_ijx[toolong][replace_ind].shape)
+                rfix_kx[replace_ind]   = rshift_kx[replace_ind, :]
+                rmagfix_k[replace_ind] = rshiftmag_k[replace_ind]
+        r_ijx[toolong] = rfix_kx
+        rmag_ij[toolong] = rmagfix_k
+
+        if np.all(r_ijx[toolong]==rstart_kx) and r_ijx_changed:
+            raise RuntimeError("r_ijx values not modified despite finding better shifts")
 
         oneoverr_ij = np.reciprocal(rmag_ij)
         q_ij = q_env[:, np.newaxis] * bcl_cdc_charges[np.newaxis, :]
@@ -827,11 +885,7 @@ description |   Index [0,-1] are grouped by residue
         if args.total:
             print(np.sum(U_atom))
         elif args.indie:
-            # SAFETY PIGSSSSSSSSSSSSSSSSSSSSSS
-            # print(" ".join([str(U) for U in U_atom]))
-            # print(" ".join([str(U) for U in np.sum(rmag_ij, axis=1)]))
-            print(" ".join([str(-U) for U in np.sum(r_ijx[:, :, 0], axis=1)]))
-            
+            print(" ".join([str(U) for U in U_atom]))
         else:
             for i in xrange(len(BCL4_resnr)):
                 site_n_couple[BCL4_resnr[i] - min(BCL4_resnr)] += U_atom[i]
